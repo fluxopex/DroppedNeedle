@@ -1912,6 +1912,7 @@ def get_playlist_service() -> "PlaylistService":
         genre_index=get_genre_index(),
         auth_store=get_auth_store(),
         library_db=get_library_db(),
+        preferences_service=get_preferences_service(),
     )
 
 

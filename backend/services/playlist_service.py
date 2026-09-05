@@ -170,6 +170,35 @@ def _record_backend_skip(source: str, album_id: str) -> None:
             )
         )
 
+# Seconds a library track may differ from the playlist entry and still count as
+# the same recording. Wide enough for encoder and lead-in differences between a
+# streaming service's duration and the local file, tight enough to reject an
+# extended mix or a radio edit.
+CROSS_RELEASE_DURATION_TOLERANCE = 5
+
+
+def _artist_names(value: str) -> list[str]:
+    """Individual artists from a playlist entry's joined artist string."""
+    return [part.strip() for part in re.split(r",|&|feat\.|/", value) if part.strip()]
+
+
+def _artists_overlap(entry_artist: str, candidate_artist: str) -> bool:
+    """Whether the two credits name a common artist.
+
+    A compilation entry is often credited "Flume, Kai" where the library file
+    says "Flume", so requiring the whole string to match would reject the very
+    case this exists for.
+    """
+    if _fuzzy_name_match(entry_artist, candidate_artist):
+        return True
+    candidates = _artist_names(candidate_artist)
+    return any(
+        _fuzzy_name_match(one, other)
+        for one in _artist_names(entry_artist)
+        for other in candidates
+    )
+
+
 class PlaylistService:
     def __init__(
         self,
@@ -180,9 +209,11 @@ class PlaylistService:
         auth_store: AuthStore | None = None,
         library_db: Any = None,
         async_repo: Any = None,
+        preferences_service: Any = None,
     ):
         if async_repo is None and repo is None:
             raise ValueError("A playlist repository is required")
+        self._preferences_service = preferences_service
         self._repo = async_repo or AsyncPlaylistRepository(repo)
         self._cover_dir = cache_dir / "covers" / "playlists"
         self._cache = cache
@@ -759,6 +790,11 @@ class PlaylistService:
                 else []
             )
 
+        if self._cross_release_match_enabled():
+            await self._match_across_releases(
+                tracks, local_service, result, file_links
+            )
+
         # Heal Spotify-imported Unknown rows (#381): entries stored with an empty
         # source_type stay unplayable after their album is downloaded. Promote them
         # to the best resolved source. Rows that already have a source are never
@@ -777,6 +813,7 @@ class PlaylistService:
                 continue
             promotions[t.id] = best
         by_id = {t.id: t for t in tracks}
+
         persist_updates: dict[str, list[str]] = {}
         for t in tracks:
             if t.id in promotions:
@@ -836,6 +873,74 @@ class PlaylistService:
             )
 
         return result
+
+    def _cross_release_match_enabled(self) -> bool:
+        if self._preferences_service is None:
+            return False
+        try:
+            return bool(
+                self._preferences_service.get_spotify_settings_raw().playlist_cross_release_match
+            )
+        except Exception:  # noqa: BLE001 - a settings read must not break resolution
+            logger.debug("Could not read cross-release match setting", exc_info=True)
+            return False
+
+    async def _match_across_releases(
+        self,
+        tracks: list[PlaylistTrackRecord],
+        local_service: object,
+        result: dict[str, list[str]],
+        file_links: dict[str, str],
+    ) -> None:
+        """Link entries the album-scoped pass could not, by finding the same
+        recording anywhere in the library.
+
+        An imported entry carries the release it came from - a compilation, say -
+        so a library holding that recording on the original album matches nothing
+        and the entry reads as missing, which sends it to be acquired. This looks
+        the recording up by name and duration instead of by release.
+
+        Every candidate must clear title, artist and duration. A missing duration
+        on either side is a refusal, not a pass: without it a live version or an
+        extended mix looks identical to the studio recording.
+        """
+        if local_service is None or not hasattr(local_service, "search_tracks"):
+            return
+
+        for t in tracks:
+            if t.id in file_links or t.library_file_id:
+                continue
+            if "local" in result.get(t.id, []):
+                continue
+            if not t.track_name or t.duration is None:
+                continue
+
+            try:
+                candidates = await local_service.search_tracks(t.track_name, limit=20)
+            except Exception:  # noqa: BLE001 - one lookup cannot fail the playlist
+                logger.debug(
+                    "Cross-release lookup failed for %s", t.track_name, exc_info=True
+                )
+                continue
+
+            for candidate in candidates:
+                duration = getattr(candidate, "duration_seconds", None)
+                if duration is None:
+                    continue
+                if abs(duration - t.duration) > CROSS_RELEASE_DURATION_TOLERANCE:
+                    continue
+                if not _fuzzy_name_match(t.track_name, candidate.title):
+                    continue
+                if not _artists_overlap(t.artist_name or "", candidate.artist_name):
+                    continue
+                file_links[t.id] = str(candidate.track_file_id)
+                result[t.id] = sorted({*result.get(t.id, []), "local"})
+                logger.info(
+                    "playlist.cross_release_match track=%s matched=%s",
+                    t.track_name,
+                    candidate.album_name,
+                )
+                break
 
     async def _resolve_album_sources(
         self,

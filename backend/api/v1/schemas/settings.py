@@ -603,6 +603,10 @@ class SpotifySettings(AppStruct):
     client_secret: str = ""
     enabled: bool = False
     spotify_redirect_origin: str = ""
+    # Link an imported playlist entry to the same recording on a different
+    # release. Off by default: matching across releases can pick a live or
+    # remixed version, so it is the administrator's call.
+    playlist_cross_release_match: bool = False
 
 
 TICKETMASTER_KEY_MASK = "ticketmaster****"

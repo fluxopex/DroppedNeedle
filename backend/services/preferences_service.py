@@ -1167,6 +1167,9 @@ class PreferencesService:
             client_secret=SPOTIFY_SECRET_MASK if client_secret else "",
             enabled=data.get("enabled", False),
             spotify_redirect_origin=data.get("spotify_redirect_origin", ""),
+            playlist_cross_release_match=data.get(
+                "playlist_cross_release_match", False
+            ),
         )
 
     def get_spotify_settings_raw(self) -> SpotifySettings:
@@ -1180,6 +1183,9 @@ class PreferencesService:
             client_secret=client_secret,
             enabled=data.get("enabled", False),
             spotify_redirect_origin=data.get("spotify_redirect_origin", ""),
+            playlist_cross_release_match=data.get(
+                "playlist_cross_release_match", False
+            ),
         )
 
     def save_spotify_settings(self, settings: SpotifySettings) -> None:
@@ -1211,6 +1217,7 @@ class PreferencesService:
                 "client_secret": encrypt(client_secret) if client_secret else "",
                 "enabled": settings.enabled,
                 "spotify_redirect_origin": origin.rstrip("/"),
+                "playlist_cross_release_match": settings.playlist_cross_release_match,
             }
             self._save_config(config)
         except Exception as e:  # noqa: BLE001

@@ -153,6 +153,26 @@
 				<span class="text-sm">Enable Spotify integration</span>
 			</label>
 
+			<label class="flex cursor-pointer items-start gap-3">
+				<input
+					type="checkbox"
+					class="toggle toggle-primary mt-0.5"
+					bind:checked={form.data.playlist_cross_release_match}
+				/>
+				<span class="whitespace-normal">
+					<span class="text-sm"
+						>Allow imported playlist fuzzy matching to same song from different release</span
+					>
+					<p class="mt-1 text-xs text-base-content/50">
+						An imported playlist entry keeps the release it came from, so a song taken from a
+						compilation will not match your copy on the original album and gets queued for download.
+						With this on, an entry links to the same recording wherever it already sits in your
+						library. Title and artist must match and the length must be within 5 seconds, so a remix
+						or live version is not used in place of the studio recording.
+					</p>
+				</span>
+			</label>
+
 			<div class="rounded-xl border border-base-300/50 bg-base-300/20 p-3">
 				<p class="mb-1.5 text-xs font-semibold uppercase tracking-wider text-base-content/50">
 					Redirect URI: add this in your Spotify app dashboard
