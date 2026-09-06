@@ -602,3 +602,96 @@ async def test_apply_worker_stops_when_the_lease_is_lost() -> None:
     values = store.complete_operation_work.await_args.kwargs
     assert values["state"] == "skipped"
     assert values["failure_code"] == "STALE_INPUT"
+
+
+def _preview_snapshot(mode: str = "preview") -> LibraryManagementJobSnapshot:
+    return LibraryManagementJobSnapshot(
+        job_id="management-1",
+        mode=mode,
+        origin="manual",
+        phase="planning",
+        selection_json="{}",
+        profile_revision="profile",
+        settings_revision="settings",
+        naming_revision="naming",
+        policy_revision="policy",
+        catalog_revision=1,
+        profile_snapshot_json="{}",
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_stale_preview_records_which_input_moved(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A preview over a large library runs for hours. The terminal code alone
+    does not say whether settings, policy, the catalog or the lease moved, and
+    without the reason a two-day run fails unexplainably."""
+    worker, store, _publisher = _worker()
+    store.get_library_management_job_snapshot.return_value = _preview_snapshot()
+    worker._planner.run_claimed_preview = AsyncMock(
+        side_effect=StaleRevisionError("Library policy changed during preview.")
+    )
+    store.finish_operation_job.return_value = {"id": "management-1", "state": "failed"}
+
+    with caplog.at_level(logging.WARNING):
+        result = await worker.run_claimed({"id": "management-1"}, "management-worker")
+
+    assert result["state"] == "failed"
+    assert "Library policy changed during preview." in caplog.text
+    assert "conflict_type=StaleRevisionError" in caplog.text
+    assert "code=STALE_INPUT" in caplog.text
+    assert "stage=preview" in caplog.text
+    store.finish_operation_job.assert_awaited_once()
+    assert store.finish_operation_job.await_args.kwargs["terminal_code"] == (
+        "STALE_INPUT"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_failed_plan_records_its_reason_too(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """PLANNING_FAILED discarded the reason in exactly the same way."""
+    worker, store, _publisher = _worker()
+    store.get_library_management_job_snapshot.return_value = _preview_snapshot()
+    worker._planner.run_claimed_preview = AsyncMock(
+        side_effect=ConflictError("The selection cursor is not usable.")
+    )
+    store.finish_operation_job.return_value = {"id": "management-1", "state": "failed"}
+
+    with caplog.at_level(logging.WARNING):
+        await worker.run_claimed({"id": "management-1"}, "management-worker")
+
+    assert "The selection cursor is not usable." in caplog.text
+    assert "code=PLANNING_FAILED" in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "mode,service",
+    [
+        ("undo", "_undo"),
+        ("baseline_restore", "_baseline"),
+        ("duplicate_resolution", "_duplicates"),
+    ],
+)
+async def test_every_planning_path_records_its_reason(
+    mode: str,
+    service: str,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The same swallow existed on all four planning paths, not just preview.
+    Fixing one and leaving the siblings is how this defect survives."""
+    worker, store, _publisher = _worker()
+    store.get_library_management_job_snapshot.return_value = _preview_snapshot(mode)
+    getattr(worker, service).run_claimed_preview = AsyncMock(
+        side_effect=StaleRevisionError(f"{mode} input moved.")
+    )
+    store.finish_operation_job.return_value = {"id": "management-1", "state": "failed"}
+
+    with caplog.at_level(logging.WARNING):
+        await worker.run_claimed({"id": "management-1"}, "management-worker")
+
+    assert f"{mode} input moved." in caplog.text
+    assert f"stage={mode}" in caplog.text
