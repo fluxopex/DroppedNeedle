@@ -44,6 +44,40 @@ class LibraryManagementWorker:
         self._baseline = baseline
         self._duplicates = duplicates
 
+    async def _fail_planning(
+        self,
+        job_id: str,
+        worker_id: str,
+        *,
+        terminal_code: str,
+        error: Exception,
+        stage: str,
+    ) -> dict:
+        """Finish a failed planning job, recording why.
+
+        A preview over a large library runs for hours, and the terminal code
+        alone ("STALE_INPUT") does not say which input moved - settings, policy,
+        the catalog, or the lease. The apply path already logs its conflict
+        reason; planning discarded it, leaving no way to tell a long run's
+        failure apart after the fact.
+        """
+        logger.warning(
+            "Library management planning failed job_id=%s stage=%s code=%s "
+            "conflict_type=%s reason=%s",
+            job_id,
+            stage,
+            terminal_code,
+            type(error).__name__,
+            str(error),
+        )
+        return await self._store.finish_operation_job(
+            job_id,
+            worker_id,
+            state="failed",
+            terminal_code=terminal_code,
+            now=time.time(),
+        )
+
     async def run_claimed(self, job: dict, worker_id: str) -> dict:
         job_id = str(job["id"])
         snapshot = await self._store.get_library_management_job_snapshot(job_id)
@@ -58,21 +92,21 @@ class LibraryManagementWorker:
         if snapshot.mode == "undo" and snapshot.phase == "planning":
             try:
                 await self._undo.run_claimed_preview(job, worker_id)
-            except StaleRevisionError:
-                return await self._store.finish_operation_job(
+            except StaleRevisionError as error:
+                return await self._fail_planning(
                     job_id,
                     worker_id,
-                    state="failed",
                     terminal_code="STALE_INPUT",
-                    now=time.time(),
+                    error=error,
+                    stage="undo",
                 )
-            except (ValidationError, ConflictError):
-                return await self._store.finish_operation_job(
+            except (ValidationError, ConflictError) as error:
+                return await self._fail_planning(
                     job_id,
                     worker_id,
-                    state="failed",
                     terminal_code="PLANNING_FAILED",
-                    now=time.time(),
+                    error=error,
+                    stage="undo",
                 )
             current = await self._store.get_operation_job(job_id)
             if current is None:
@@ -81,21 +115,21 @@ class LibraryManagementWorker:
         if snapshot.mode == "baseline_restore" and snapshot.phase == "planning":
             try:
                 await self._baseline.run_claimed_preview(job, worker_id)
-            except StaleRevisionError:
-                return await self._store.finish_operation_job(
+            except StaleRevisionError as error:
+                return await self._fail_planning(
                     job_id,
                     worker_id,
-                    state="failed",
                     terminal_code="STALE_INPUT",
-                    now=time.time(),
+                    error=error,
+                    stage="baseline_restore",
                 )
-            except (ValidationError, ConflictError):
-                return await self._store.finish_operation_job(
+            except (ValidationError, ConflictError) as error:
+                return await self._fail_planning(
                     job_id,
                     worker_id,
-                    state="failed",
                     terminal_code="PLANNING_FAILED",
-                    now=time.time(),
+                    error=error,
+                    stage="baseline_restore",
                 )
             current = await self._store.get_operation_job(job_id)
             if current is None:
@@ -106,21 +140,21 @@ class LibraryManagementWorker:
         if snapshot.mode == "duplicate_resolution" and snapshot.phase == "planning":
             try:
                 await self._duplicates.run_claimed_preview(job, worker_id)
-            except StaleRevisionError:
-                return await self._store.finish_operation_job(
+            except StaleRevisionError as error:
+                return await self._fail_planning(
                     job_id,
                     worker_id,
-                    state="failed",
                     terminal_code="STALE_INPUT",
-                    now=time.time(),
+                    error=error,
+                    stage="duplicate_resolution",
                 )
-            except (ValidationError, ConflictError):
-                return await self._store.finish_operation_job(
+            except (ValidationError, ConflictError) as error:
+                return await self._fail_planning(
                     job_id,
                     worker_id,
-                    state="failed",
                     terminal_code="PLANNING_FAILED",
-                    now=time.time(),
+                    error=error,
+                    stage="duplicate_resolution",
                 )
             current = await self._store.get_operation_job(job_id)
             if current is None:
@@ -150,21 +184,21 @@ class LibraryManagementWorker:
             )
         try:
             planned = await self._planner.run_claimed_preview(job, worker_id)
-        except StaleRevisionError:
-            return await self._store.finish_operation_job(
+        except StaleRevisionError as error:
+            return await self._fail_planning(
                 job_id,
                 worker_id,
-                state="failed",
                 terminal_code="STALE_INPUT",
-                now=time.time(),
+                error=error,
+                stage="preview",
             )
-        except (ValidationError, ConflictError):
-            return await self._store.finish_operation_job(
+        except (ValidationError, ConflictError) as error:
+            return await self._fail_planning(
                 job_id,
                 worker_id,
-                state="failed",
                 terminal_code="PLANNING_FAILED",
-                now=time.time(),
+                error=error,
+                stage="preview",
             )
         current = await self._store.get_operation_job(job_id)
         if current is None:
