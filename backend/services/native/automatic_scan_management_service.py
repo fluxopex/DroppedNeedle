@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import os
 import stat
 from pathlib import Path, PurePosixPath
@@ -28,6 +29,8 @@ from services.native.library_management_profile_service import (
 )
 from services.native.library_policy_resolver import LibraryPolicyResolver
 
+logger = logging.getLogger(__name__)
+
 
 class AutomaticScanManagementService:
     def __init__(
@@ -47,15 +50,72 @@ class AutomaticScanManagementService:
             tuple[str, str], tuple[tuple[int, ...] | None, str | None]
         ] = {}
 
+    @staticmethod
+    def _identity_gaps(identity: object, expected_tracks: int) -> dict[str, object]:
+        """Which part of the release-level identity is missing.
+
+        "identity_not_release_level" on its own sends you looking at the album;
+        naming the absent field says whether it needs identifying at all or is
+        merely linked to a release group rather than a release.
+        """
+        if identity is None:
+            return {"missing": "accepted_identity"}
+        missing = []
+        if getattr(identity, "identity_revision", None) is None:
+            missing.append("identity_revision")
+        if not getattr(identity, "release_group_mbid", None):
+            missing.append("release_group_mbid")
+        if not getattr(identity, "release_mbid", None):
+            missing.append("release_mbid")
+        tracks = list(getattr(identity, "tracks", ()) or ())
+        if len(tracks) != expected_tracks:
+            missing.append(f"track_count({len(tracks)}!={expected_tracks})")
+        for field in (
+            "identity_revision",
+            "recording_mbid",
+            "release_track_mbid",
+            "medium_position",
+            "release_track_position",
+        ):
+            absent = sum(1 for track in tracks if not getattr(track, field, None))
+            if absent:
+                missing.append(f"tracks_without_{field}({absent})")
+        return {"missing": ",".join(missing) or "none"}
+
+    @staticmethod
+    def _decline(local_album_id: str, reason: str, **fields: object) -> None:
+        """Say why an album was not scheduled for automatic management.
+
+        Every gate below returns None, and there are nine of them. Without this
+        an album that never organises is indistinguishable from one the feature
+        was never asked about, which is the whole of the diagnosis.
+        """
+        detail = " ".join(f"{key}={value}" for key, value in sorted(fields.items()))
+        logger.info(
+            "automatic_management.declined album=%s reason=%s%s",
+            local_album_id,
+            reason,
+            f" {detail}" if detail else "",
+        )
+        return None
+
     async def schedule_scanned_album(self, local_album_id: str) -> str | None:
+        # Entry is logged as well as every refusal: with only refusals, silence
+        # is ambiguous between "declined" and "never asked", and those need
+        # opposite fixes.
+        logger.info("automatic_management.considering album=%s", local_album_id)
         context = await self._store.get_album_identification_context(local_album_id)
         if context is None:
-            return None
+            return self._decline(local_album_id, "no_identification_context")
         tracks = [
             track for track in context["tracks"] if track["availability"] == "indexed"
         ]
         if not tracks:
-            return None
+            return self._decline(
+                local_album_id,
+                "no_indexed_tracks",
+                tracks=len(context["tracks"]),
+            )
         return await self._schedule_identified_context(
             local_album_id,
             album_input_revisions(tracks)[2],
@@ -69,9 +129,10 @@ class AutomaticScanManagementService:
     ) -> str | None:
         """Queue one deterministic album operation, or wait for complete mappings."""
 
+        logger.info("automatic_management.considering album=%s", local_album_id)
         context = await self._store.get_album_identification_context(local_album_id)
         if context is None or not context["tracks"]:
-            return None
+            return self._decline(local_album_id, "no_identification_context")
         return await self._schedule_identified_context(
             local_album_id, expected_input_policy_revision, context
         )
@@ -86,9 +147,13 @@ class AutomaticScanManagementService:
             track for track in context["tracks"] if track["availability"] == "indexed"
         ]
         if not tracks:
-            return None
+            return self._decline(
+                local_album_id,
+                "no_indexed_tracks",
+                tracks=len(context["tracks"]),
+            )
         if album_input_revisions(tracks)[2] != expected_input_policy_revision:
-            return None
+            return self._decline(local_album_id, "input_policy_revision_moved")
         tag_revision, file_revision, input_policy_revision = album_input_revisions(
             tracks
         )
@@ -96,11 +161,17 @@ class AutomaticScanManagementService:
             str(track["applied_policy_revision"]) for track in tracks
         }
         if len(applied_policy_revisions) != 1:
-            return None
+            return self._decline(
+                local_album_id,
+                "mixed_applied_policy_revisions",
+                count=len(applied_policy_revisions),
+            )
         policy_revision = next(iter(applied_policy_revisions))
         root_ids = {str(track["root_id"]) for track in tracks}
         if len(root_ids) != 1:
-            return None
+            return self._decline(
+                local_album_id, "tracks_span_multiple_roots", count=len(root_ids)
+            )
         root_id = next(iter(root_ids))
         resolved = self._profiles.prepare_automatic_profile(
             root_id=root_id,
@@ -108,19 +179,28 @@ class AutomaticScanManagementService:
             expected_policy_revision=policy_revision,
         )
         if resolved is None:
-            return None
+            return self._decline(
+                local_album_id,
+                "no_automatic_profile_for_root",
+                root_id=root_id,
+                trigger="scan_discovered",
+            )
         settings, assignment, profile, policy = resolved
         if await self._restored_after_activation(
             tracks, assignment.activation_confirmed_at
         ):
-            return None
+            return self._decline(
+                local_album_id,
+                "activation_not_confirmed_or_restored_since",
+                activation_confirmed_at=assignment.activation_confirmed_at,
+            )
         track_ids = tuple(str(track["id"]) for track in tracks)
         identity = await self._store.get_accepted_library_management_identity(
             local_album_id,
             local_track_ids=track_ids,
         )
         if await self._store.get_management_exclusion(local_album_id) is not None:
-            return None
+            return self._decline(local_album_id, "album_excluded_from_management")
         if identity is not None and identity.identity_kind == "custom_edition":
             identity_ready = (
                 assignment.automatic_custom_editions
@@ -152,7 +232,11 @@ class AutomaticScanManagementService:
                 )
             )
         if not identity_ready:
-            return None
+            return self._decline(
+                local_album_id,
+                "identity_not_release_level",
+                **self._identity_gaps(identity, len(track_ids)),
+            )
         assert identity is not None
         identity_revision = ":".join(
             [
@@ -174,7 +258,7 @@ class AutomaticScanManagementService:
             policy=policy,
             policy_revision=policy_revision,
         ):
-            return None
+            return self._decline(local_album_id, "already_matches_committed_management")
         idempotency_material = "\x00".join(
             (
                 local_album_id,
