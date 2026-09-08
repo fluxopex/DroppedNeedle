@@ -241,6 +241,7 @@ export interface LibraryManagementSettings {
 	tagging_scripts: ManagementScriptSettings[];
 	undo_retention_days: number;
 	preview_retention_hours: number;
+	album_scoped_staleness: boolean;
 	recycle_bin_path: string;
 	external_refresh: {
 		enabled: boolean;

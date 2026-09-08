@@ -21877,8 +21877,17 @@ class NativeLibraryStore(PersistenceBase):
         *,
         expected_snapshot_revision: int,
         now: float,
+        album_scoped_staleness: bool = False,
     ) -> LibraryManagementJobSnapshot:
-        """Atomically seal the exact plan and release its operation lease as ready."""
+        """Atomically seal the exact plan and release its operation lease as ready.
+
+        ``album_scoped_staleness`` narrows the pre-flight guard from the
+        library-wide catalog revision to the albums this plan actually covers.
+        The global counter is bumped by identification, artwork and hygiene work
+        on unrelated albums, so on a large library a plan is invalidated by
+        activity it does not touch. Per-file revisions are still verified at
+        commit, so nothing writes against a moved file either way.
+        """
 
         def operation(connection: sqlite3.Connection) -> LibraryManagementJobSnapshot:
             snapshot = connection.execute(
@@ -21904,15 +21913,38 @@ class NativeLibraryStore(PersistenceBase):
                 raise StaleRevisionError(
                     "The management preview has a pending control request."
                 )
-            catalog_revision = int(
-                connection.execute(
-                    "SELECT value FROM library_catalog_revision WHERE singleton = 1"
+            if album_scoped_staleness:
+                # The same five columns the publisher verifies per item at
+                # commit (library_management_publisher._prepare), asked early so
+                # a plan built over a moved file still fails before it is
+                # offered - just not because an unrelated album was identified.
+                moved = connection.execute(
+                    "SELECT COUNT(*) FROM library_management_plan_items i "
+                    "LEFT JOIN local_tracks t ON t.id = i.local_track_id "
+                    "WHERE i.job_id = ? AND i.local_track_id IS NOT NULL "
+                    "AND (t.id IS NULL "
+                    "OR t.row_revision IS NOT i.expected_track_revision "
+                    "OR t.root_id IS NOT i.expected_root_id "
+                    "OR t.relative_path IS NOT i.expected_relative_path "
+                    "OR t.stat_revision IS NOT i.expected_stat_revision "
+                    "OR t.tag_revision IS NOT i.expected_tag_revision)",
+                    (job_id,),
                 ).fetchone()[0]
-            )
-            if catalog_revision != int(snapshot["catalog_revision"]):
-                raise StaleRevisionError(
-                    "The library catalog changed while the preview was being built."
+                if int(moved):
+                    raise StaleRevisionError(
+                        f"{int(moved)} planned file(s) changed while the preview "
+                        "was being built."
+                    )
+            else:
+                catalog_revision = int(
+                    connection.execute(
+                        "SELECT value FROM library_catalog_revision WHERE singleton = 1"
+                    ).fetchone()[0]
                 )
+                if catalog_revision != int(snapshot["catalog_revision"]):
+                    raise StaleRevisionError(
+                        "The library catalog changed while the preview was being built."
+                    )
 
             collision_groups = connection.execute(
                 "SELECT destination_root_id, destination_collision_key, "

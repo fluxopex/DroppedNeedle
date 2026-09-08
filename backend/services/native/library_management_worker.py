@@ -212,22 +212,43 @@ class LibraryManagementWorker:
                 raise ValidationError(
                     "The stored Library Management snapshot is invalid."
                 ) from error
-            if (
-                int(summary.get("blocked_count", 0)) == 0
-                and int(summary.get("stale_count", 0)) == 0
-            ):
-                if planned.preview_token_hash is None:
-                    return current
-                try:
-                    return await self._store.begin_library_management_apply(
-                        job_id,
-                        preview_token_hash=planned.preview_token_hash,
-                        expected_job_revision=int(current["row_revision"]),
-                        idempotency_key=f"automatic-scan-apply:{job_id}",
-                        now=time.time(),
-                    )
-                except (StaleRevisionError, ValidationError):
-                    return current
+            blocked = int(summary.get("blocked_count", 0))
+            stale = int(summary.get("stale_count", 0))
+            if blocked or stale:
+                # Automatic apply is all-or-nothing per album by design, but the
+                # counts were only visible in the UI. An album that silently
+                # never organises is the hardest state to diagnose.
+                logger.info(
+                    "automatic_apply.skipped job_id=%s reason=plan_not_clean "
+                    "blocked=%s stale=%s",
+                    job_id,
+                    blocked,
+                    stale,
+                )
+                return current
+            if planned.preview_token_hash is None:
+                logger.info(
+                    "automatic_apply.skipped job_id=%s reason=no_preview_token",
+                    job_id,
+                )
+                return current
+            try:
+                return await self._store.begin_library_management_apply(
+                    job_id,
+                    preview_token_hash=planned.preview_token_hash,
+                    expected_job_revision=int(current["row_revision"]),
+                    idempotency_key=f"automatic-scan-apply:{job_id}",
+                    now=time.time(),
+                )
+            except (StaleRevisionError, ValidationError) as error:
+                logger.info(
+                    "automatic_apply.skipped job_id=%s reason=begin_refused "
+                    "conflict_type=%s detail=%s",
+                    job_id,
+                    type(error).__name__,
+                    str(error),
+                )
+                return current
         return current
 
     async def _run_apply(self, job_id: str, worker_id: str) -> dict:

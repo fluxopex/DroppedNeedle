@@ -1181,9 +1181,7 @@
 													value={assignment.overrides.multi_disc_naming_mode}
 													onchange={(event) => {
 														const mode = event.currentTarget.value as
-															| 'inherit'
-															| 'standard'
-															| 'script';
+															'inherit' | 'standard' | 'script';
 														updateOverrides(root.id, {
 															multi_disc_naming_mode: mode,
 															multi_disc_naming_script_id:
@@ -1271,6 +1269,20 @@
 							class="input input-bordered bg-base-100"
 							bind:value={draft.preview_retention_hours}
 						/></label
+					>
+					<label class="management-master-toggle sm:col-span-2"
+						><input
+							type="checkbox"
+							class="toggle toggle-sm"
+							bind:checked={draft.album_scoped_staleness}
+						/><span class="whitespace-normal"
+							><strong>Check plans against their own albums</strong><small
+								>A plan is normally invalidated by any change to the library, including
+								identification or artwork work on albums it does not touch — so on a large library a
+								plan can rarely finish. With this on, only the files in the plan are checked. Every
+								file is still verified individually before anything is written.</small
+							></span
+						></label
 					>
 					<label class="grid gap-1.5 text-sm sm:col-span-2"
 						><span>Recycle directory</span><input

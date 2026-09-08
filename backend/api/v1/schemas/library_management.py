@@ -525,6 +525,13 @@ class LibraryManagementSettings(AppStruct):
     undo_retention_days: int = 90
     preview_retention_hours: int = 24
     recycle_bin_path: str = ""
+    # Seal a plan against the albums it covers rather than a library-wide
+    # revision counter. The counter is bumped by identification, artwork and
+    # hygiene work on unrelated albums, so on a large library an in-flight plan
+    # is invalidated by activity it does not touch. Per-file revisions are still
+    # checked at commit, so this narrows the pre-flight guard, it does not
+    # remove one.
+    album_scoped_staleness: bool = False
     external_refresh: ExternalRefreshSettings = msgspec.field(
         default_factory=ExternalRefreshSettings
     )

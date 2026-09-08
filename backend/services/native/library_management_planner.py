@@ -2338,6 +2338,9 @@ class LibraryManagementPlanner:
                 worker_id,
                 expected_snapshot_revision=expected_snapshot_revision,
                 now=self._clock(),
+                album_scoped_staleness=bool(
+                    self._preferences.get_library_management_settings_raw().album_scoped_staleness
+                ),
             )
         except StaleRevisionError:
             controlled = await self._store.checkpoint_operation_control(
