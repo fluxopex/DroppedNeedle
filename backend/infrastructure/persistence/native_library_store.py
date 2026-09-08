@@ -21402,8 +21402,15 @@ class NativeLibraryStore(PersistenceBase):
         now: float,
         current_settings_revision: str | None = None,
         current_policy_revision: str | None = None,
+        album_scoped_staleness: bool = False,
     ) -> dict[str, Any]:
         """Atomically convert one exact sealed preview into its apply operation.
+
+        ``album_scoped_staleness`` narrows the catalog guard to the files this
+        plan covers, the same way ``finalize_library_management_preview`` does.
+        Sealing and beginning an apply are two separate checks of the same
+        library-wide counter; narrowing only the first leaves per-album
+        automation failing here instead, one stage later.
 
         F-079: pass the caller's freshly-read settings/policy revisions to
         have them verified INSIDE this transaction alongside the catalog
@@ -21456,15 +21463,33 @@ class NativeLibraryStore(PersistenceBase):
                 or float(snapshot["preview_expires_at"]) <= now
             ):
                 raise StaleRevisionError("The Library Management preview expired.")
-            catalog_revision = int(
-                connection.execute(
-                    "SELECT value FROM library_catalog_revision WHERE singleton=1"
+            if album_scoped_staleness:
+                moved = connection.execute(
+                    "SELECT COUNT(*) FROM library_management_plan_items i "
+                    "LEFT JOIN local_tracks t ON t.id = i.local_track_id "
+                    "WHERE i.job_id = ? AND i.local_track_id IS NOT NULL "
+                    "AND (t.id IS NULL "
+                    "OR t.row_revision IS NOT i.expected_track_revision "
+                    "OR t.root_id IS NOT i.expected_root_id "
+                    "OR t.relative_path IS NOT i.expected_relative_path "
+                    "OR t.stat_revision IS NOT i.expected_stat_revision "
+                    "OR t.tag_revision IS NOT i.expected_tag_revision)",
+                    (job_id,),
                 ).fetchone()[0]
-            )
-            if catalog_revision != int(snapshot["catalog_revision"]):
-                raise StaleRevisionError(
-                    "The library catalog changed after the preview."
+                if int(moved):
+                    raise StaleRevisionError(
+                        f"{int(moved)} planned file(s) changed after the preview."
+                    )
+            else:
+                catalog_revision = int(
+                    connection.execute(
+                        "SELECT value FROM library_catalog_revision WHERE singleton=1"
+                    ).fetchone()[0]
                 )
+                if catalog_revision != int(snapshot["catalog_revision"]):
+                    raise StaleRevisionError(
+                        "The library catalog changed after the preview."
+                    )
             # F-079: settings/policy drift verified inside the same
             # transaction (values freshly read by the caller) so the apply is
             # rejected once, cleanly, instead of failing per bundle later.

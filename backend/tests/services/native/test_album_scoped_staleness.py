@@ -191,3 +191,46 @@ async def test_a_vanished_planned_file_still_fails_the_seal(tmp_path: Path) -> N
             now=200.0,
             album_scoped_staleness=True,
         )
+
+
+@pytest.mark.asyncio
+async def test_beginning_an_apply_is_narrowed_too(tmp_path: Path) -> None:
+    """Sealing and beginning an apply check the same counter separately.
+
+    Narrowing only the seal moved the failure one stage later: automatic
+    management then reported "The library catalog changed after the preview"
+    instead. Both have to be narrowed or neither is.
+    """
+    store, snapshot = await _planned(tmp_path, "begin-apply")
+    with sqlite3.connect(_db(tmp_path)) as connection:
+        connection.execute(
+            "UPDATE library_catalog_revision SET value = value + 1 WHERE singleton = 1"
+        )
+        token_hash, expires = connection.execute(
+            "SELECT preview_token_hash, preview_expires_at FROM "
+            "library_management_job_snapshots WHERE job_id = ?",
+            (snapshot.job_id,),
+        ).fetchone()
+    assert token_hash, "the sealed preview should carry an apply token"
+    assert expires and expires > 200.0
+
+    row = await store.begin_library_management_apply(
+        snapshot.job_id,
+        preview_token_hash=token_hash,
+        expected_job_revision=_job_revision(tmp_path, snapshot.job_id),
+        idempotency_key="begin-apply-test",
+        now=200.0,
+        album_scoped_staleness=True,
+    )
+
+    assert row is not None
+
+
+def _job_revision(tmp_path: Path, job_id: str) -> int:
+    with sqlite3.connect(_db(tmp_path)) as connection:
+        return int(
+            connection.execute(
+                "SELECT row_revision FROM library_operation_jobs WHERE id = ?",
+                (job_id,),
+            ).fetchone()[0]
+        )

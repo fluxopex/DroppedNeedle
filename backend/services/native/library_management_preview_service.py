@@ -518,6 +518,9 @@ class LibraryManagementPreviewService:
                 self._preferences.get_library_management_settings_raw()
             ),
             current_policy_revision=policy.policy_revision,
+            album_scoped_staleness=bool(
+                self._preferences.get_library_management_settings_raw().album_scoped_staleness
+            ),
         )
         return LibraryOperationService._response(row)
 

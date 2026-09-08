@@ -36,6 +36,7 @@ class LibraryManagementWorker:
         undo: LibraryManagementUndoService,
         baseline: LibraryManagementBaselineService,
         duplicates: LibraryManagementDuplicateService,
+        preferences: object | None = None,
     ) -> None:
         self._store = store
         self._planner = planner
@@ -43,6 +44,20 @@ class LibraryManagementWorker:
         self._undo = undo
         self._baseline = baseline
         self._duplicates = duplicates
+        # Optional so existing constructions keep working; without it the
+        # automatic apply falls back to the library-wide catalog guard.
+        self._preferences = preferences
+
+    def _album_scoped_staleness(self) -> bool:
+        if self._preferences is None:
+            return False
+        try:
+            return bool(
+                self._preferences.get_library_management_settings_raw().album_scoped_staleness
+            )
+        except Exception:  # noqa: BLE001 - a settings read must not fail an apply
+            logger.debug("Could not read album_scoped_staleness", exc_info=True)
+            return False
 
     async def _fail_planning(
         self,
@@ -239,6 +254,7 @@ class LibraryManagementWorker:
                     expected_job_revision=int(current["row_revision"]),
                     idempotency_key=f"automatic-scan-apply:{job_id}",
                     now=time.time(),
+                    album_scoped_staleness=self._album_scoped_staleness(),
                 )
             except (StaleRevisionError, ValidationError) as error:
                 logger.info(

@@ -993,6 +993,7 @@ def get_library_management_worker() -> "LibraryManagementWorker":
         get_library_management_undo_service(),
         get_library_management_baseline_service(),
         get_library_management_duplicate_service(),
+        get_preferences_service(),
     )
 
 
