@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 from typing import Literal
 
 from fastapi import APIRouter, Depends, Query, Response
@@ -51,6 +53,7 @@ from api.v1.schemas.library_management_sharing import (
 )
 from api.v1.schemas.library_operations import OperationResponse
 from core.dependencies import (
+    NativeLibraryStoreDep,
     LibraryManagementBaselineServiceDep,
     LibraryManagementDuplicateServiceDep,
     LibraryManagementPreviewServiceDep,
@@ -60,7 +63,7 @@ from core.dependencies import (
     EditionConversionServiceDep,
 )
 from core.exceptions import ValidationError
-from infrastructure.msgspec_fastapi import MsgSpecBody, MsgSpecRoute
+from infrastructure.msgspec_fastapi import AppStruct, MsgSpecBody, MsgSpecRoute
 from middleware import CurrentAdminDep
 
 
@@ -107,6 +110,32 @@ async def update_library_management_settings(
     return service.save_settings(
         request.settings,
         expected_settings_revision=request.expected_settings_revision,
+    )
+
+
+class QueueAllAlbumsResponse(AppStruct):
+    queued: int
+
+
+@router.post(
+    "/library/management/queue-all",
+    response_model=QueueAllAlbumsResponse,
+)
+async def queue_all_albums_for_management(
+    store: NativeLibraryStoreDep,
+    root_id: str | None = Query(default=None),
+) -> QueueAllAlbumsResponse:
+    """Hand every indexed album to automatic management, one at a time.
+
+    Automatic management is fed only by albums a scan saw as new or changed, so
+    an already-indexed library is never offered to it. This queues the lot
+    through the same worker, which takes them one album at a time and parks a
+    failure without stopping the rest.
+    """
+    return QueueAllAlbumsResponse(
+        queued=await store.seed_all_albums_as_management_candidates(
+            now=time.time(), root_id=root_id
+        )
     )
 
 

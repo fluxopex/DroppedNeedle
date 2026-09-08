@@ -475,6 +475,7 @@ export const API = {
 	},
 	libraryManagement: {
 		settings: () => '/api/v1/settings/library-management',
+		queueAll: () => '/api/v1/library/management/queue-all',
 		impact: () => '/api/v1/settings/library-management/impact',
 		validate: () => '/api/v1/settings/library-management/validate',
 		profiles: () => '/api/v1/settings/library-management/profiles',

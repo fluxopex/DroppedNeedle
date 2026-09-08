@@ -10447,6 +10447,56 @@ class NativeLibraryStore(PersistenceBase):
         )
         return int(cursor.rowcount)
 
+    async def seed_all_albums_as_management_candidates(
+        self, *, now: float, root_id: str | None = None
+    ) -> int:
+        """Queue every indexed album for automatic management.
+
+        Automatic management is fed only by albums a scan saw as new or changed
+        (``comparison_result IN ('new','changed')``), so a library that is
+        already indexed is never offered to it however many times it is
+        rescanned. This is the deliberate way to hand it everything: the same
+        queue, the same worker, the same one-album-at-a-time behaviour, just a
+        different reason for a row existing.
+
+        Rows are attached to the most recent completed scan run because the due
+        query joins on ``scan.state='completed'``. Existing rows are left alone,
+        so re-running this never resets progress or a back-off.
+        """
+
+        def operation(connection: sqlite3.Connection) -> int:
+            run = connection.execute(
+                "SELECT id FROM library_scan_runs WHERE state='completed' "
+                "ORDER BY COALESCE(terminal_at, started_at, queued_at) DESC LIMIT 1"
+            ).fetchone()
+            if run is None:
+                raise ValidationError(
+                    "A completed library scan is required before queueing albums."
+                )
+            run_id = str(run["id"])
+            clause = "AND track.root_id=? " if root_id else ""
+            parameters: tuple[Any, ...] = (
+                (run_id, now, root_id) if root_id else (run_id, now)
+            )
+            cursor = connection.execute(
+                "INSERT OR IGNORE INTO library_scan_management_candidates "
+                "(run_id,local_album_id,state,attempt_count,next_attempt_at) "
+                "SELECT ?,track.local_album_id,'pending',0,? "
+                "FROM local_tracks track "
+                "WHERE track.availability='indexed' " + clause +
+                "GROUP BY track.local_album_id",
+                parameters,
+            )
+            queued = int(cursor.rowcount or 0)
+            if queued:
+                self._bump_stream(connection, "operation")
+            return queued
+
+        result = await self._write(operation)
+        if result:
+            await self._invalidate()
+        return result
+
     async def get_due_scan_management_candidates(
         self, *, now: float, limit: int = 256
     ) -> list[dict[str, Any]]:

@@ -751,6 +751,7 @@ def test_management_route_inventory_is_complete() -> None:
         if method in {"GET", "POST", "PUT", "DELETE"}
     }
     assert inventory == {
+        ("POST", "/library/management/queue-all"),
         ("GET", "/settings/library-management"),
         ("PUT", "/settings/library-management"),
         ("POST", "/settings/library-management/impact"),

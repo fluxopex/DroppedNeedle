@@ -32,6 +32,8 @@
 		rememberLibraryManagementPreviewToken
 	} from '$lib/queries/library-management/LibraryManagementPreviewTokens';
 	import { createUuid } from '$lib/utils/uuid';
+	import { api } from '$lib/api/client';
+	import { API } from '$lib/constants';
 	import type { LibraryRootSettings } from '$lib/queries/library/LibraryOperationsTypes';
 	import {
 		getLibraryManagementActivationPreviewQuery,
@@ -88,6 +90,24 @@
 	const purgeBaselines = purgeLibraryManagementBaselinesMutation();
 
 	let draft = $state<LibraryManagementSettings | null>(null);
+	let queueingAll = $state(false);
+	let queueAllResult = $state('');
+
+	async function queueAllAlbums() {
+		queueingAll = true;
+		queueAllResult = '';
+		try {
+			const result = await api.global.post<{ queued: number }>(API.libraryManagement.queueAll());
+			queueAllResult =
+				result.queued > 0
+					? `${result.queued} album(s) queued. They are processed one at a time in the background.`
+					: 'Nothing new to queue - every album is already queued or done.';
+		} catch (error) {
+			queueAllResult = error instanceof Error ? error.message : 'Could not queue albums.';
+		} finally {
+			queueingAll = false;
+		}
+	}
 	let persistedSettings = $state<LibraryManagementSettings | null>(null);
 	let sourceRevision = $state('');
 	let selectedProfileId = $state<string | null>(null);
@@ -1270,6 +1290,28 @@
 							bind:value={draft.preview_retention_hours}
 						/></label
 					>
+					<div class="sm:col-span-2 grid gap-1.5">
+						<button
+							type="button"
+							class="btn btn-outline btn-sm w-fit"
+							onclick={queueAllAlbums}
+							disabled={queueingAll}
+						>
+							{#if queueingAll}
+								<span class="loading loading-spinner loading-xs"></span>
+							{/if}
+							Organise every album now
+						</button>
+						<small class="text-base-content/50 whitespace-normal">
+							Automatic management only ever sees albums a scan found new or changed, so an
+							already-indexed library is never offered to it. This hands it everything, one album at
+							a time; an album that fails is parked and the rest carry on.
+							{#if queueAllResult}
+								<span class="block mt-1 text-base-content/70">{queueAllResult}</span>
+							{/if}
+						</small>
+					</div>
+
 					<label class="management-master-toggle sm:col-span-2"
 						><input
 							type="checkbox"
