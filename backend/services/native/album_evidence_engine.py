@@ -299,6 +299,23 @@ def is_edition_uncertain(decision: IdentificationDecision) -> bool:
 class AlbumEvidenceEngine:
     """Assign tracks once, persist the result, and let every consumer reuse it."""
 
+    def __init__(self, *, trust_embedded_identity: bool = True) -> None:
+        """``trust_embedded_identity`` stops a display string overruling an exact
+        identifier.
+
+        A file tagged by Picard carries the release and release-track MBIDs, and
+        those either match a candidate or they do not. The album-artist string
+        does not agree so cleanly: Picard writes the full joined credit
+        ("88rising, BIBI & 347aidan") while the release's album artist is the
+        primary artist ("88rising"), which fails a 0.20 distance threshold. That
+        made every collaboration fail to identify, reported as conflicting track
+        evidence even though every track matched on both MBIDs.
+
+        With this on, a string disagreement cannot veto a candidate whose tracks
+        are all proven by release-track MBID. Conflicting MBIDs still do.
+        """
+        self._trust_embedded_identity = trust_embedded_identity
+
     def complete_administrator_exact_release_mapping(
         self,
         local_tracks: list[GroupingTrack],
@@ -618,10 +635,15 @@ class AlbumEvidenceEngine:
             and any(kind in HARD_CONFLICT_KINDS for kind in item.evidence_kinds)
         )
         soft_contradictions = contradictions - hard_contradictions
-        if (
-            hard_contradictions
-            or title_class == "contradictory"
-            or artist_class == "contradictory"
+        embedded_identity_proven = (
+            self._trust_embedded_identity and exact_release_track_proof
+        )
+        if hard_contradictions or (
+            not embedded_identity_proven
+            and (
+                title_class == "contradictory"
+                or artist_class == "contradictory"
+            )
         ):
             reason = "CONFLICTING_TRACK_EVIDENCE"
         elif supported == 0:
